@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { useProjectiles, BulletType } from "../hooks/useProjectiles";
 
 interface GameCanvasProps {
   score?: number;
@@ -13,17 +14,19 @@ interface GameCanvasProps {
   gameStatus?: "menu" | "playing" | "paused" | "gameOver";
   onSpecialFire?: () => void;
   onShieldActivate?: () => void;
+  initialBulletType?: BulletType;
 }
 
 interface Enemy {
   id: string;
   x: number;
   y: number;
-  type: "basic" | "armored" | "fast" | "boss";
+  type: "basic" | "armored" | "fast" | "boss" | "special";
   health: number;
   speed: number;
   width: number;
   height: number;
+  dropsPowerUp?: boolean;
 }
 
 interface Projectile {
@@ -34,6 +37,8 @@ interface Projectile {
   width: number;
   height: number;
   isSpecial?: boolean;
+  isCharged?: boolean;
+  chargeLevel?: number;
   damage?: number;
 }
 
@@ -76,11 +81,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   gameStatus = "playing",
   onSpecialFire,
   onShieldActivate,
+  initialBulletType = "standard",
 }) => {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [enemies, setEnemies] = useState<Enemy[]>([]);
-  const [projectiles, setProjectiles] = useState<Projectile[]>([]);
+  // Projectiles state is now managed by the useProjectiles hook
   const [powerUps, setPowerUps] = useState<PowerUp[]>([]);
   const [player, setPlayer] = useState<Player>({
     x: 0,
@@ -89,6 +95,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     height: 60,
     cooldown: 500, // milliseconds
     currentCooldown: 0,
+    currentBulletType: initialBulletType,
     powerUps: {},
   });
   const [gameActive, setGameActive] = useState(true);
@@ -96,6 +103,26 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const [enemySpawnTimer, setEnemySpawnTimer] = useState(0);
   const [powerUpSpawnTimer, setPowerUpSpawnTimer] = useState(0);
   const [stageTimer, setStageTimer] = useState(180); // 3 minutes in seconds
+
+  // Initialize the projectiles hook first, before using any of its values
+  const {
+    projectiles,
+    setProjectiles,
+    moveProjectiles,
+    fireProjectile,
+    handlePointerDown,
+    handlePointerUp,
+    chargeStartTime,
+    currentChargeLevel,
+    maxChargeLevel,
+  } = useProjectiles({
+    player,
+    setPlayer,
+    canvasSize,
+    isPaused,
+    gameActive,
+    gameStatus,
+  });
 
   // Initialize the game
   useEffect(() => {
@@ -159,6 +186,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     powerUps,
     player,
     canvasSize,
+    moveProjectiles,
+    gameStatus,
   ]);
 
   // Update game state based on delta time
@@ -174,29 +203,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         return;
       }
     }
-    // Spawn enemies
-    const newEnemySpawnTimer = enemySpawnTimer + deltaTime;
-    const spawnInterval = Math.max(2000 - stage * 100, 500); // Decrease spawn time as stage increases
 
-    if (newEnemySpawnTimer >= spawnInterval) {
-      spawnEnemy();
-      setEnemySpawnTimer(0);
-    } else {
-      setEnemySpawnTimer(newEnemySpawnTimer);
-    }
+    // Handle enemy spawning
+    updateEnemySpawning(deltaTime);
 
-    // Spawn power-ups occasionally
-    const newPowerUpSpawnTimer = powerUpSpawnTimer + deltaTime;
-    if (newPowerUpSpawnTimer >= 15000) {
-      // Every 15 seconds
-      if (Math.random() < 0.3) {
-        // 30% chance
-        spawnPowerUp();
-      }
-      setPowerUpSpawnTimer(0);
-    } else {
-      setPowerUpSpawnTimer(newPowerUpSpawnTimer);
-    }
+    // Handle power-up spawning
+    updatePowerUpSpawning(deltaTime);
 
     // Update player cooldown
     if (player.currentCooldown > 0) {
@@ -222,19 +234,67 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     checkCollisions();
   };
 
+  // Handle enemy spawning logic
+  const updateEnemySpawning = (deltaTime: number) => {
+    const newEnemySpawnTimer = enemySpawnTimer + deltaTime;
+    const spawnInterval = Math.max(2000 - stage * 100, 500); // Decrease spawn time as stage increases
+
+    if (newEnemySpawnTimer >= spawnInterval) {
+      spawnEnemy();
+      setEnemySpawnTimer(0);
+    } else {
+      setEnemySpawnTimer(newEnemySpawnTimer);
+    }
+  };
+
+  // Handle power-up spawning logic
+  const updatePowerUpSpawning = (deltaTime: number) => {
+    const newPowerUpSpawnTimer = powerUpSpawnTimer + deltaTime;
+    if (newPowerUpSpawnTimer >= 15000) {
+      // Every 15 seconds
+      if (Math.random() < 0.3) {
+        // 30% chance
+        spawnPowerUp();
+      }
+      setPowerUpSpawnTimer(0);
+    } else {
+      setPowerUpSpawnTimer(newPowerUpSpawnTimer);
+    }
+  };
+
   // Spawn a new enemy
   const spawnEnemy = () => {
     if (!canvasSize.width) return;
 
+    // Get enemy configuration based on stage and randomness
+    const enemyConfig = getEnemyConfigForStage(stage);
+
+    // Create the enemy with the determined configuration
+    const newEnemy: Enemy = {
+      id: `enemy-${Date.now()}-${Math.random()}`,
+      x: Math.random() * (canvasSize.width - enemyConfig.width),
+      y: -enemyConfig.height,
+      type: enemyConfig.type,
+      health: enemyConfig.health,
+      speed: enemyConfig.speed,
+      width: enemyConfig.width,
+      height: enemyConfig.height,
+    };
+
+    setEnemies((prev) => [...prev, newEnemy]);
+  };
+
+  // Determine enemy type and properties based on stage
+  const getEnemyConfigForStage = (currentStage: number) => {
     // Determine enemy type based on stage and randomness
     let type: Enemy["type"] = "basic";
     const rand = Math.random();
 
-    if (stage >= 10 && rand < 0.1) {
+    if (currentStage >= 10 && rand < 0.1) {
       type = "boss";
-    } else if (stage >= 5 && rand < 0.3) {
+    } else if (currentStage >= 5 && rand < 0.3) {
       type = "armored";
-    } else if (stage >= 3 && rand < 0.4) {
+    } else if (currentStage >= 3 && rand < 0.4) {
       type = "fast";
     }
 
@@ -265,24 +325,32 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         break;
     }
 
-    const newEnemy: Enemy = {
-      id: `enemy-${Date.now()}-${Math.random()}`,
-      x: Math.random() * (canvasSize.width - width),
-      y: -height,
-      type,
-      health,
-      speed,
-      width,
-      height,
-    };
-
-    setEnemies((prev) => [...prev, newEnemy]);
+    return { type, health, speed, width, height };
   };
 
   // Spawn a power-up
   const spawnPowerUp = () => {
     if (!canvasSize.width) return;
 
+    // Get power-up configuration
+    const powerUpConfig = getPowerUpConfig();
+
+    // Create the power-up with the determined configuration
+    const newPowerUp: PowerUp = {
+      id: `powerup-${Date.now()}-${Math.random()}`,
+      x: Math.random() * (canvasSize.width - powerUpConfig.width),
+      y: -powerUpConfig.height,
+      type: powerUpConfig.type,
+      speed: powerUpConfig.speed,
+      width: powerUpConfig.width,
+      height: powerUpConfig.height,
+    };
+
+    setPowerUps((prev) => [...prev, newPowerUp]);
+  };
+
+  // Get power-up configuration
+  const getPowerUpConfig = () => {
     const types: PowerUp["type"][] = [
       "rapidFire",
       "shield",
@@ -293,18 +361,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     const width = 30;
     const height = 30;
+    const speed = 0.05;
 
-    const newPowerUp: PowerUp = {
-      id: `powerup-${Date.now()}-${Math.random()}`,
-      x: Math.random() * (canvasSize.width - width),
-      y: -height,
-      type,
-      speed: 0.05,
-      width,
-      height,
-    };
-
-    setPowerUps((prev) => [...prev, newPowerUp]);
+    return { type, width, height, speed };
   };
 
   // Update power-up durations
@@ -372,29 +431,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     });
   };
 
-  // Move projectiles based on their speed
-  const moveProjectiles = (deltaTime: number) => {
-    setProjectiles((prev) => {
-      const updatedProjectiles = prev
-        .map((projectile) => {
-          // Move projectile up
-          const newY = projectile.y - projectile.speed * deltaTime;
-
-          // Remove if off screen
-          if (newY < -projectile.height) {
-            return null;
-          }
-
-          return {
-            ...projectile,
-            y: newY,
-          };
-        })
-        .filter(Boolean) as Projectile[];
-
-      return updatedProjectiles;
-    });
-  };
+  // Projectiles hook is now initialized earlier in the component
 
   // Move power-ups based on their speed
   const movePowerUps = (deltaTime: number) => {
@@ -534,6 +571,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           duration: 10000, // 10 seconds
           remaining: 10000,
         };
+        // Notify parent component about power-up collection
+        onPowerUpCollected("rapidFire");
         break;
       case "shield":
         updatedPowerUps.shield = {
@@ -541,6 +580,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           duration: 15000, // 15 seconds
           remaining: 15000,
         };
+        // Notify parent component about power-up collection
+        onPowerUpCollected("shield");
         break;
       case "multiShot":
         updatedPowerUps.multiShot = {
@@ -548,11 +589,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           duration: 8000, // 8 seconds
           remaining: 8000,
         };
+        // Notify parent component about power-up collection
+        onPowerUpCollected("multiShot");
         break;
       case "bomb":
         // Bomb immediately destroys all enemies on screen
         setEnemies([]);
         onEnemyDestroyed(enemies.length * 10); // Award points for all enemies
+        // Notify parent component about power-up collection
+        onPowerUpCollected("bomb");
         break;
     }
 
@@ -562,66 +607,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }));
   };
 
-  // Fire a projectile from the player's position
-  const fireProjectile = (isSpecialFire = false) => {
-    if (player.currentCooldown > 0) return;
-
-    const projectileWidth = isSpecialFire ? 20 : 10;
-    const projectileHeight = isSpecialFire ? 30 : 20;
-
-    // Create base projectile
-    const baseProjectile: Projectile = {
-      id: `projectile-${Date.now()}-${Math.random()}`,
-      x: player.x + player.width / 2 - projectileWidth / 2,
-      y: player.y - projectileHeight,
-      speed: isSpecialFire ? 0.7 : 0.5,
-      width: projectileWidth,
-      height: projectileHeight,
-      isSpecial: isSpecialFire,
-      damage: isSpecialFire ? 3 : 1,
-    };
-
-    let newProjectiles: Projectile[] = [];
-
-    // Special fire creates a larger, more powerful projectile
-    if (isSpecialFire) {
-      newProjectiles = [baseProjectile];
-    }
-    // Check if multiShot is active
-    else if (player.powerUps.multiShot?.active) {
-      // Create 3 projectiles (left, center, right)
-      newProjectiles = [
-        {
-          ...baseProjectile,
-          id: `${baseProjectile.id}-1`,
-          x: baseProjectile.x - 20,
-        },
-        { ...baseProjectile, id: `${baseProjectile.id}-2` },
-        {
-          ...baseProjectile,
-          id: `${baseProjectile.id}-3`,
-          x: baseProjectile.x + 20,
-        },
-      ];
-    } else {
-      // Just a single projectile
-      newProjectiles = [baseProjectile];
-    }
-
-    setProjectiles((prev) => [...prev, ...newProjectiles]);
-
-    // Set cooldown based on rapidFire power-up or special fire
-    const cooldownTime = isSpecialFire
-      ? 1000
-      : player.powerUps.rapidFire?.active
-        ? 200
-        : 500;
-
-    setPlayer((prev) => ({
-      ...prev,
-      currentCooldown: cooldownTime,
-    }));
-  };
+  // Projectile firing is now handled by the useProjectiles hook
 
   // Handle player movement
   const movePlayer = (newX: number) => {
@@ -650,11 +636,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
   };
 
-  // Handle touch/mouse tap for shooting
-  const handlePointerDown = () => {
-    if (isPaused || !gameActive) return;
-    fireProjectile();
-  };
+  // Charging and pointer handling is now managed by the useProjectiles hook
+
+  // Projectiles hook is now initialized earlier in the component
 
   // Handle special fire ability
   const handleSpecialFire = () => {
@@ -687,57 +671,144 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       className="relative w-full h-full bg-black overflow-hidden touch-none"
       onPointerMove={handlePointerMove}
       onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
     >
       {/* Player turret */}
       <motion.div
-        className="absolute bg-blue-500 rounded-t-lg"
+        className="absolute rounded-t-lg z-50 overflow-visible"
         style={{
           width: player.width,
           height: player.height,
           left: player.x,
           bottom: canvasSize.height - player.y - player.height,
-          backgroundImage:
-            "url('https://images.unsplash.com/photo-1579546929518-9e396f3cc809?w=60&q=80')",
-          backgroundSize: "cover",
-          backgroundPosition: "center",
         }}
         animate={{ x: player.x }}
         transition={{ type: "spring", damping: 20 }}
       >
+        {/* Player body with glow effect */}
+        <div
+          className="w-full h-full rounded-t-lg relative"
+          style={{
+            background: "linear-gradient(to bottom, #4299e1, #3182ce)",
+            boxShadow:
+              "0 0 15px 5px rgba(66, 153, 225, 0.6), 0 0 30px 10px rgba(66, 153, 225, 0.3)",
+          }}
+        >
+          {/* Inner details */}
+          <div className="absolute inset-2 rounded-t-md bg-blue-700 opacity-70"></div>
+          <div className="absolute inset-x-[30%] inset-y-[40%] rounded-full bg-blue-300 opacity-50"></div>
+        </div>
+
         {/* Weapon barrel */}
-        <div className="absolute top-[-10px] left-[50%] w-4 h-10 bg-gray-700 transform translate-x-[-50%] rounded-t-md"></div>
+        <div className="absolute top-[-10px] left-[50%] w-4 h-10 bg-gray-700 transform translate-x-[-50%] rounded-t-md shadow-md"></div>
 
         {/* Cooldown indicator */}
         {player.currentCooldown > 0 && (
           <div
-            className="absolute bottom-0 left-0 bg-red-500 opacity-50 h-1"
+            className="absolute bottom-0 left-0 bg-red-500 opacity-70 h-1.5 z-20"
             style={{
               width: `${(player.currentCooldown / player.cooldown) * 100}%`,
             }}
           ></div>
         )}
 
+        {/* Charge indicator */}
+        {chargeStartTime && currentChargeLevel > 0 && (
+          <div className="absolute top-[-20px] left-0 w-full z-20">
+            <div className="h-2.5 bg-gray-800 rounded-full overflow-hidden shadow-inner">
+              <div
+                className={`h-full ${currentChargeLevel >= maxChargeLevel ? "bg-red-600 animate-pulse" : "bg-orange-400"}`}
+                style={{
+                  width: `${(currentChargeLevel / maxChargeLevel) * 100}%`,
+                }}
+              ></div>
+            </div>
+          </div>
+        )}
+
         {/* Shield effect */}
         {(player.powerUps.shield?.active || player.shieldActive) && (
-          <div className="absolute inset-[-10px] rounded-full border-4 border-cyan-400 opacity-70 animate-pulse"></div>
+          <div className="absolute inset-[-15px] rounded-full border-4 border-cyan-400 opacity-70 animate-pulse z-10"></div>
         )}
       </motion.div>
 
       {/* Projectiles */}
-      {projectiles.map((projectile) => (
-        <motion.div
-          key={projectile.id}
-          className={`absolute ${projectile.isSpecial ? "bg-purple-500" : "bg-yellow-400"} rounded-sm`}
-          style={{
-            width: projectile.width,
-            height: projectile.height,
-            left: projectile.x,
-            top: projectile.y,
-          }}
-          initial={{ opacity: 0, scale: 0.5 }}
-          animate={{ opacity: 1, scale: 1 }}
-        />
-      ))}
+      {projectiles.map((projectile) => {
+        // Determine projectile color and effects based on type and properties
+        let projectileColor = "bg-yellow-400";
+        let projectileEffect = "";
+        let projectileGlow = "";
+        // Add spraying effect for certain bullet types
+        const isSprayingBullet =
+          projectile.bulletType === "plasma" || projectile.isSpecial;
+
+        if (projectile.isSpecial) {
+          projectileColor = "bg-purple-500";
+          projectileGlow = "shadow-[0_0_10px_3px_rgba(147,51,234,0.7)]";
+          projectileEffect = "animate-pulse";
+        } else if (projectile.isCharged) {
+          // Different colors based on charge level
+          const chargeColors = [
+            "bg-yellow-400", // Level 0
+            "bg-orange-400", // Level 1
+            "bg-red-400", // Level 2
+            "bg-red-500", // Level 3
+            "bg-red-600", // Level 4
+            "bg-red-700", // Level 5
+          ];
+          const chargeGlows = [
+            "shadow-[0_0_5px_2px_rgba(250,204,21,0.5)]", // Level 0
+            "shadow-[0_0_6px_2px_rgba(251,146,60,0.5)]", // Level 1
+            "shadow-[0_0_7px_3px_rgba(248,113,113,0.6)]", // Level 2
+            "shadow-[0_0_8px_3px_rgba(239,68,68,0.6)]", // Level 3
+            "shadow-[0_0_9px_4px_rgba(220,38,38,0.7)]", // Level 4
+            "shadow-[0_0_10px_5px_rgba(185,28,28,0.7)]", // Level 5
+          ];
+          projectileColor =
+            chargeColors[Math.min(projectile.chargeLevel || 0, 5)];
+          projectileGlow =
+            chargeGlows[Math.min(projectile.chargeLevel || 0, 5)];
+        } else {
+          // Different styles based on bullet type
+          switch (projectile.bulletType) {
+            case "laser":
+              projectileColor = "bg-cyan-400";
+              projectileGlow = "shadow-[0_0_8px_3px_rgba(34,211,238,0.6)]";
+              break;
+            case "plasma":
+              projectileColor = "bg-green-400";
+              projectileGlow = "shadow-[0_0_8px_3px_rgba(74,222,128,0.6)]";
+              projectileEffect = "animate-bounce";
+              break;
+            case "explosive":
+              projectileColor = "bg-orange-500";
+              projectileGlow = "shadow-[0_0_8px_3px_rgba(249,115,22,0.6)]";
+              projectileEffect = "animate-ping";
+              break;
+            default: // standard
+              projectileColor = "bg-yellow-400";
+              projectileGlow = "shadow-[0_0_5px_2px_rgba(250,204,21,0.5)]";
+          }
+        }
+
+        return (
+          <motion.div
+            key={projectile.id}
+            className={`absolute ${projectileColor} ${projectileGlow} ${projectileEffect} rounded-sm z-40`}
+            style={{
+              width: projectile.width,
+              height: projectile.height,
+              left: projectile.x,
+              top: projectile.y,
+              transform: isSprayingBullet
+                ? `rotate(${Math.sin(Date.now() * 0.01 + parseInt(projectile.id)) * 15}deg)`
+                : "none",
+            }}
+            initial={{ opacity: 0, scale: 0.5 }}
+            animate={{ opacity: 1, scale: 1 }}
+          />
+        );
+      })}
 
       {/* Enemies */}
       {enemies.map((enemy) => {

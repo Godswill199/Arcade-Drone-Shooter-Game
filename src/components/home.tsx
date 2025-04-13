@@ -39,9 +39,9 @@ const Home: React.FC = () => {
   };
 
   // Handle player shooting
-  const handleShoot = () => {
+  const handleShoot = (chargeLevel = 0) => {
     // This will be implemented to handle the shooting mechanics
-    console.log("Shooting");
+    console.log(`Shooting with charge level: ${chargeLevel}`);
   };
 
   // Handle special ability (special fire)
@@ -148,13 +148,24 @@ const Home: React.FC = () => {
       activePowerups: [...prev.activePowerups, powerupType],
     }));
 
-    // Power-ups could expire after a certain time
+    // Set duration based on powerup type
+    let duration = 10000; // Default 10 seconds
+
+    if (powerupType === "rapidFire") {
+      duration = 10000; // 10 seconds for rapid fire
+    } else if (powerupType === "shield") {
+      duration = 15000; // 15 seconds for shield
+    } else if (powerupType === "multiShot") {
+      duration = 8000; // 8 seconds for multi shot
+    }
+
+    // Power-ups expire after their duration
     setTimeout(() => {
       setGameState((prev) => ({
         ...prev,
         activePowerups: prev.activePowerups.filter((p) => p !== powerupType),
       }));
-    }, 10000); // 10 seconds duration for power-ups
+    }, duration);
   };
 
   // Advance to next stage
